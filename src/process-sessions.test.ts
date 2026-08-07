@@ -141,6 +141,26 @@ const noisyInputResult = await manager.write({
 assert.equal(noisyInputResult.running, false);
 assert.match(noisyInputResult.output, /input:hello/);
 
+// Buffered output must not make a pure poll return immediately while the process
+// is still running. The poll should aggregate noisy output until completion (or
+// its yield window) so MCP hosts do not need to issue rapid follow-up polls.
+const consolidatedPoll = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e "const timer=setInterval(() => console.log('poll-tick'), 10); setTimeout(() => { clearInterval(timer); console.log('poll-finished'); process.exit(0); }, 150)"`,
+  yieldTimeMs: 5,
+});
+assert.equal(consolidatedPoll.running, true);
+assert.ok(consolidatedPoll.sessionId);
+await new Promise((resolve) => setTimeout(resolve, 40));
+const consolidatedPollResult = await manager.write({
+  workspaceId: "workspace-a",
+  sessionId: consolidatedPoll.sessionId,
+  yieldTimeMs: 2_000,
+});
+assert.equal(consolidatedPollResult.running, false);
+assert.match(consolidatedPollResult.output, /poll-finished/);
+
 const interruptible = await manager.start({
   workspaceId: "workspace-a",
   cwd: process.cwd(),
