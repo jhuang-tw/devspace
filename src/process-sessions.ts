@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 
-const DEFAULT_EXEC_YIELD_MS = 10_000;
+// Keep process execution throughput unchanged while reducing MCP-visible polling churn.
+// Commands get a longer initial yield, and non-interactive polls aggregate output for
+// up to a minute by default. Callers can still request a shorter yield explicitly
+// when they genuinely need incremental progress or interactive responsiveness.
+const DEFAULT_EXEC_YIELD_MS = 30_000;
 const DEFAULT_INTERACTIVE_YIELD_MS = 250;
-const DEFAULT_POLL_YIELD_MS = 5_000;
+const DEFAULT_POLL_YIELD_MS = 60_000;
 const MAX_COMMAND_YIELD_MS = 30_000;
 const MAX_POLL_YIELD_MS = 110_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
@@ -264,7 +268,11 @@ export class ProcessSessionManager {
     const writableChars = chars.replaceAll("\u0003", "");
     if (writableChars && session.running) session.process?.write(writableChars);
 
-    if ((interactionRequested || !session.buffer.hasOutput()) && session.running) {
+    // A pure poll is a long-poll boundary, not a request for every buffered chunk.
+    // Always wait for completion or the requested yield window even when output is
+    // already buffered. This batches noisy process output into one MCP response
+    // instead of causing the model/host to immediately issue another poll.
+    if (session.running) {
       const fallback = interactionRequested ? DEFAULT_INTERACTIVE_YIELD_MS : DEFAULT_POLL_YIELD_MS;
       const maximum = interactionRequested ? MAX_COMMAND_YIELD_MS : MAX_POLL_YIELD_MS;
       const yieldTimeMs = boundedInteger(input.yieldTimeMs, fallback, maximum);
